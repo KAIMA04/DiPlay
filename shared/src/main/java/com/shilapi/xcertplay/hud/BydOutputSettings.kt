@@ -158,6 +158,9 @@ object BydOutputSettings {
     /** Whether the head unit has a BYD navigation receiver or is a BYD head unit, so settings can show navigation/map options. */
     fun available(context: Context): Boolean =
         navigationAvailable(context) ||
+            // A completed, persisted vehicle-service probe is stronger evidence than the generic
+            // QUALCOMM/qti build strings reported by some older BYD head units.
+            BydVehicleFieldStore.load(context) != null ||
             installed(context, "com.byd.carsettings") ||
             installed(context, "com.byd.appmgr") ||
             installed(context, "com.byd.deviceinfo") ||

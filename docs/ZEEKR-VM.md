@@ -25,9 +25,10 @@ diagnostic report.
 - DiPlay records both Android feature declarations and the services/adapters actually visible to
   this process. Vendor VMs sometimes expose one without the other, so feature declarations alone
   never approve a transport.
-- BYD navigation, vehicle-data, and cluster workers start only when a BYD package, receiver, or
-  build identity is detected. Exact BYD firmware checks and behavior remain unchanged on that
-  hardware. A Zeekr or generic VM leaves those integrations inert.
+- BYD navigation, vehicle-data, and cluster workers start only when a BYD package, receiver, build
+  identity, or previously completed BYD vehicle-service probe is present. Exact BYD firmware checks
+  and behavior remain unchanged on that hardware. A fresh Zeekr or generic VM leaves those
+  integrations inert.
 - The main CarPlay canvas uses the activity's measured window size and decoder capabilities.
   BYD's fixed 1920x720 cluster profile remains behind its exact firmware/display checks.
 - Apple USB devices continue to be discovered by Apple's vendor ID. The deployment CH341
