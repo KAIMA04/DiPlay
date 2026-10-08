@@ -34,6 +34,7 @@ import com.shilapi.xcertplay.airplay.AirPlaySessionListener
 import com.shilapi.xcertplay.airplay.PairingStore
 import com.shilapi.xcertplay.airplay.VideoInCar
 import com.shilapi.xcertplay.airplay.VideoPlaybackDelivery
+import com.shilapi.xcertplay.compat.HeadUnitCapabilityDetector
 import com.shilapi.xcertplay.hud.BydNavigationOutputs
 import com.shilapi.xcertplay.iap2.session.Iap2Session
 import com.shilapi.xcertplay.mfi.Iap2MfiAuthenticationClient
@@ -90,6 +91,7 @@ import com.shilapi.xcertplay.transport.NcmFunctionDiscovery
 import com.shilapi.xcertplay.transport.NcmUsbBridge
 import java.io.Closeable
 import java.io.IOException
+import java.io.InterruptedIOException
 import java.net.InetAddress
 import java.net.Inet6Address
 import java.util.Locale
@@ -108,6 +110,11 @@ sealed class CarPlayStatus {
     data object RequestingMfiPermission : CarPlayStatus()
     data object MfiReady : CarPlayStatus()
     data object StartingHotspot : CarPlayStatus()
+    data class HotspotFallback(
+        val failedBackend: String,
+        val nextBackend: String,
+        val reason: String,
+    ) : CarPlayStatus()
     data class HotspotReady(
         val ssid: String,
         val band: String,
@@ -176,6 +183,7 @@ class CarPlayController(
     private enum class Phase { IDLE, MFI, WIRELESS, IPHONE, REENUMERATION, DATAPATHS, CONTROL }
 
     private val appContext = context.applicationContext
+    private val headUnitCapabilities = HeadUnitCapabilityDetector.detect(appContext)
     private val diagnosticAttempt = diagnosticAttempts.incrementAndGet()
     private val diagnosticRun = AtomicInteger()
     private val usbManager: UsbManager? = context.getSystemService(UsbManager::class.java)
@@ -417,6 +425,7 @@ class CarPlayController(
             if (closed) return
         }
         connectionDiagnostic("start transport=${config.transport}")
+        debugLog(headUnitCapabilities.diagnosticSummary())
         if (!hasRequiredUsbService()) return
         videoListener?.let { listener ->
             videoGate = VideoInCarGate(
@@ -1085,6 +1094,42 @@ class CarPlayController(
         }
     }
 
+    private fun requireWirelessPlatform() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            appContext.checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            throw WirelessStartupException(
+                WirelessStartupFailure.PLATFORM_UNAVAILABLE,
+                "Bluetooth permission is denied. Allow Nearby devices for DiPlay, or use USB.",
+            )
+        }
+        val adapter = bluetoothAdapter ?: throw WirelessStartupException(
+            WirelessStartupFailure.PLATFORM_UNAVAILABLE,
+            "Bluetooth is unavailable in this Android environment. Wireless CarPlay needs Bluetooth; use USB.",
+        )
+        val enabled = try {
+            adapter.isEnabled
+        } catch (error: SecurityException) {
+            throw WirelessStartupException(
+                WirelessStartupFailure.PLATFORM_UNAVAILABLE,
+                "Bluetooth permission is denied. Allow Nearby devices for DiPlay, or use USB.",
+            )
+        }
+        if (!enabled) {
+            throw WirelessStartupException(
+                WirelessStartupFailure.PLATFORM_UNAVAILABLE,
+                "Bluetooth is turned off. Turn it on for wireless CarPlay, or use USB.",
+            )
+        }
+        if (!headUnitCapabilities.wifiService) {
+            throw WirelessStartupException(
+                WirelessStartupFailure.PLATFORM_UNAVAILABLE,
+                "Wi-Fi is unavailable in this Android environment. Choose USB in Connection setup.",
+            )
+        }
+    }
+
     private fun startWireless(expectedGeneration: Int? = null) {
         val generation = synchronized(wirelessResourceLock) {
             if (closed || expectedGeneration != null && expectedGeneration != wirelessGeneration.get()) return
@@ -1131,6 +1176,7 @@ class CarPlayController(
             ) {
                 return
             }
+            requireWirelessPlatform()
 
             val listenerIdentity = AirPlayListenerIdentity(generation)
             val watchdog = FirstTcpWatchdog(
@@ -1441,7 +1487,15 @@ class CarPlayController(
             } else {
                 debugLog("wireless bring-up failed", error)
                 if (error is Error) throw error
-                fail(error, generation)
+                val reported = if (error is SecurityException) {
+                    WirelessStartupException(
+                        WirelessStartupFailure.PLATFORM_UNAVAILABLE,
+                        "This Android environment denied a required wireless permission. " +
+                            "Allow Nearby devices and Wi-Fi access, or use USB.",
+                        error,
+                    )
+                } else error
+                fail(reported, generation)
                 closeWirelessStack(generation = generation)
             }
         }
@@ -2077,8 +2131,65 @@ class CarPlayController(
             type.equals("disable-bluetooth", ignoreCase = true)
 
     private fun startWirelessHotspot(generation: Int): WirelessHotspotInfo {
+        val manualPassphrase = config.manualHotspotPassphrase.orEmpty()
+        val manualConfigured = config.manualHotspotSsid?.let {
+            ManualHotspotValidation.error(it, manualPassphrase) == null
+        } == true &&
+            (config.manualHotspotSecurity == ManualHotspotSecurity.OPEN) == manualPassphrase.isEmpty() &&
+            (config.manualHotspotChannel == 0 ||
+                isManualHotspotChannelCompatible(config.manualHotspotBand, config.manualHotspotChannel))
+        val existingWifiConfigured =
+            ManualHotspotValidation.error(config.existingWifiSsid, config.existingWifiPassphrase) == null
+        val modes = WirelessHotspotFallbackPlan.modes(
+            preferred = config.wirelessHotspotMode,
+            wifiP2pServiceAvailable = headUnitCapabilities.wifiDirectService,
+            manualConfigured = manualConfigured,
+            existingWifiConfigured = existingWifiConfigured,
+        )
+        val failures = mutableListOf<Pair<WirelessHotspotMode, Exception>>()
+        for ((index, mode) in modes.withIndex()) {
+            try {
+                return startWirelessHotspot(mode, generation, fallback = index > 0)
+            } catch (failure: Exception) {
+                if (failure is InterruptedIOException || isStaleWirelessRun(generation)) throw failure
+                if (generateSequence<Throwable>(failure) { it.cause }
+                        .any { it is com.shilapi.xcertplay.network.P2pResetRequiredException }) {
+                    throw failure
+                }
+                failures += mode to failure
+                val next = modes.getOrNull(index + 1) ?: break
+                val reason = wirelessFailureSummary(failure)
+                debugLog(
+                    "wireless backend fallback failed=${mode.diagnosticLabel()} " +
+                        "next=${next.diagnosticLabel()} reason=$reason",
+                )
+                onStatus(
+                    CarPlayStatus.HotspotFallback(
+                        failedBackend = mode.diagnosticLabel(),
+                        nextBackend = next.diagnosticLabel(),
+                        reason = reason,
+                    ),
+                    generation,
+                )
+            }
+        }
+        val attempted = failures.joinToString { (mode, _) -> mode.diagnosticLabel() }
+        val last = failures.lastOrNull()?.second
+        throw WirelessStartupException(
+            WirelessStartupFailure.HOTSPOT_CONFIGURATION,
+            "Could not open a wireless network${attempted.takeIf { it.isNotEmpty() }?.let { " (tried $it)" }.orEmpty()}. " +
+                "Open Connection setup to choose another saved network, or use USB. " +
+                (last?.let(::wirelessFailureSummary) ?: "No compatible wireless backend is available."),
+            last,
+        )
+    }
+
+    private fun startWirelessHotspot(
+        hotspotMode: WirelessHotspotMode,
+        generation: Int,
+        fallback: Boolean,
+    ): WirelessHotspotInfo {
         val readyDeadline = System.nanoTime() + WirelessStartupPolicy.HOTSPOT_READY_MILLIS * 1_000_000
-        val hotspotMode = config.wirelessHotspotMode
         if (com.shilapi.xcertplay.network.CarHotspotSettings.shouldEnable(
                 appContext, config.transport == CarPlayTransport.WIRELESS, hotspotMode,
             )
@@ -2134,16 +2245,18 @@ class CarPlayController(
         synchronized(wirelessResourceLock) {
             if (isStaleWirelessRun(generation)) {
                 manager.close()
-                throw java.io.InterruptedIOException("Hotspot startup cancelled")
+                throw InterruptedIOException("Hotspot startup cancelled")
             }
             hotspot = manager
         }
-        val timeoutMillis = if (hotspotMode == WirelessHotspotMode.WIFI_P2P) {
-            WIFI_P2P_START_TIMEOUT_MILLIS
-        } else if (hotspotMode == WirelessHotspotMode.MANUAL) {
-            ((readyDeadline - System.nanoTime()) / 1_000_000).coerceAtLeast(1)
-        } else {
-            HOTSPOT_START_TIMEOUT_MILLIS
+        val timeoutMillis = when (hotspotMode) {
+            WirelessHotspotMode.WIFI_P2P ->
+                if (fallback) minOf(WIFI_P2P_START_TIMEOUT_MILLIS, WIRELESS_FALLBACK_TIMEOUT_MILLIS)
+                else WIFI_P2P_START_TIMEOUT_MILLIS
+            WirelessHotspotMode.MANUAL ->
+                ((readyDeadline - System.nanoTime()) / 1_000_000).coerceAtLeast(1)
+            else ->
+                if (fallback) WIRELESS_FALLBACK_TIMEOUT_MILLIS else HOTSPOT_START_TIMEOUT_MILLIS
         }
         return try {
             manager.start(timeoutMillis)
@@ -2151,13 +2264,21 @@ class CarPlayController(
             if (hotspot === manager) hotspot = null
             closeBestEffort(hotspotMode.name) { manager.close() }
             if (isStaleWirelessRun(generation)) throw failure
-            throw IOException(
-                "Could not establish ${hotspotMode.name} hotspot: " +
-                    (failure.message ?: failure.javaClass.simpleName),
-                failure,
-            )
+            throw failure
         }
     }
+
+    private fun WirelessHotspotMode.diagnosticLabel(): String = when (this) {
+        WirelessHotspotMode.WIFI_P2P -> "Wi-Fi Direct"
+        WirelessHotspotMode.LOCAL_ONLY_HOTSPOT -> "local-only hotspot"
+        WirelessHotspotMode.MANUAL -> "built-in car hotspot"
+        WirelessHotspotMode.EXISTING_WIFI -> "existing Wi-Fi"
+    }
+
+    private fun wirelessFailureSummary(failure: Throwable): String =
+        (failure.message ?: failure.javaClass.simpleName)
+            .replace(Regex("\\s+"), " ")
+            .take(180)
 
     private fun isStaleWirelessRun(generation: Int): Boolean =
         closed || phase != Phase.WIRELESS || generation != wirelessGeneration.get() || wirelessFailureReported.get()
@@ -2168,7 +2289,7 @@ class CarPlayController(
         (wifiScanPause ?: WifiScanPause(appContext, ::debugLog).also { wifiScanPause = it }).pause()
     }
 
-    private fun selectWirelessBluetoothDevice(adapter: BluetoothAdapter): BluetoothDevice {
+    private fun selectWirelessBluetoothDevice(adapter: BluetoothAdapter): BluetoothDevice = try {
         val bonded = adapter.bondedDevices.orEmpty()
         config.wirelessBluetoothDeviceAddress?.let { selected ->
             return bonded.firstOrNull { it.address.equals(selected, ignoreCase = true) }
@@ -2208,6 +2329,12 @@ class CarPlayController(
         if (bonded.size == 1) return bonded.single()
         throw IOException(
             "No unambiguous bonded iPhone found; pair one iPhone and retry",
+        )
+    } catch (error: SecurityException) {
+        throw WirelessStartupException(
+            WirelessStartupFailure.PLATFORM_UNAVAILABLE,
+            "Bluetooth access was denied by this Android environment. Allow Nearby devices, or use USB.",
+            error,
         )
     }
 
@@ -2609,6 +2736,8 @@ class CarPlayController(
             "STEP mfi/ready: MFi authentication provider is ready"
         CarPlayStatus.StartingHotspot ->
             "STEP wifi/ap: starting the wireless CarPlay access point"
+        is CarPlayStatus.HotspotFallback ->
+            "STEP wifi/fallback: failed=$failedBackend next=$nextBackend reason=$reason"
         is CarPlayStatus.HotspotReady ->
             "STEP wifi/ap-ready: backend=$backend ssid=$ssid band=$band " +
                 "channel=$channel bssid=$bssid address=$address"
@@ -2657,6 +2786,7 @@ class CarPlayController(
         private const val IAP2_IPHONE_UUID = "00000000-deca-fade-deca-deafdecacafe"
         private const val HOTSPOT_START_TIMEOUT_MILLIS = 60_000L
         private const val WIFI_P2P_START_TIMEOUT_MILLIS = 20_000L
+        private const val WIRELESS_FALLBACK_TIMEOUT_MILLIS = 15_000L
         private const val PAIR_TIMEOUT_MILLIS = 5 * 60_000L
         private const val VPN_CONNECT_TIMEOUT_MILLIS = 10_000L
         private const val CONTROL_LOOP_TIMEOUT_MILLIS = 5 * 60_000L

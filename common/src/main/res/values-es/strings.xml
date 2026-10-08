@@ -689,4 +689,5 @@
     <string name="setup_badge_adb">Requiere ADB por red</string>
     <string name="setup_done_title">Todo listo</string>
     <string name="setup_done_description">Conecta tu iPhone ahora. Puedes volver a abrir esta guía desde Ajustes.</string>
+    <string name="wireless_backend_fallback">Probando %1$s en su lugar</string>
 </resources>

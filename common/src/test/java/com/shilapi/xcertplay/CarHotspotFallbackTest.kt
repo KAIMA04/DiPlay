@@ -12,6 +12,7 @@ import com.shilapi.xcertplay.network.CarHotspotSettings
 import com.shilapi.xcertplay.network.CarHotspotStatus
 import com.shilapi.xcertplay.network.ManualHotspotManager
 import com.shilapi.xcertplay.network.ExistingWifiManager
+import com.shilapi.xcertplay.network.WifiP2pGroupManager
 import com.shilapi.xcertplay.network.WirelessHotspotBackend
 import com.shilapi.xcertplay.network.WirelessHotspotInfo
 import com.shilapi.xcertplay.orchestration.CarPlayController
@@ -37,6 +38,7 @@ import org.robolectric.annotation.Implements
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [29], manifest = Config.NONE, shadows = [CarHotspotFallbackTest.ApState::class,
     CarHotspotFallbackTest.ManualAttachment::class, CarHotspotFallbackTest.ExistingAttachment::class,
+    CarHotspotFallbackTest.P2pFailure::class,
     CarHotspotAdbGrantTest.WritePermission::class])
 class CarHotspotFallbackTest {
     private val app get() = RuntimeEnvironment.getApplication()
@@ -47,6 +49,8 @@ class CarHotspotFallbackTest {
         CarHotspotAdbGrantTest.WritePermission.allowed = true
         ApState.enabled = null
         ManualAttachment.starts = 0
+        ExistingAttachment.starts = 0
+        P2pFailure.starts = 0
     }
 
     @Test fun unreadableApStateAllowsManualAttachmentWithOrWithoutAutoStartup() {
@@ -92,6 +96,15 @@ class CarHotspotFallbackTest {
         assertEquals(0, ManualAttachment.starts)
     }
 
+    @Test fun failedWifiDirectFallsBackToTheAlreadyConfiguredExistingNetwork() {
+        controller(WirelessHotspotMode.WIFI_P2P, existingFallback = true).use {
+            assertEquals(WirelessHotspotBackend.EXISTING_WIFI, start(it).backend)
+        }
+        assertEquals(1, P2pFailure.starts)
+        assertEquals(1, ExistingAttachment.starts)
+        assertEquals(0, ManualAttachment.starts)
+    }
+
     private fun assertStartupFailure(message: String, generation: Int = 0) {
         controller().use { controller ->
             val error = assertThrows(IOException::class.java) { start(controller, generation) }
@@ -107,10 +120,14 @@ class CarHotspotFallbackTest {
         catch (error: InvocationTargetException) { throw error.targetException }
     }
 
-    private fun controller(mode: WirelessHotspotMode = WirelessHotspotMode.MANUAL): CarPlayController = CarPlayController(app,
+    private fun controller(
+        mode: WirelessHotspotMode = WirelessHotspotMode.MANUAL,
+        existingFallback: Boolean = false,
+    ): CarPlayController = CarPlayController(app,
         CarPlayRuntimeConfig(mfiTarget = MfiTarget.LOCAL, transport = CarPlayTransport.WIRELESS,
             wirelessHotspotMode = mode, manualHotspotSsid = "Car hotspot",
-            existingWifiSsid = "Pocket", existingWifiPassphrase = "pocket-password",
+            existingWifiSsid = if (mode == WirelessHotspotMode.EXISTING_WIFI || existingFallback) "Pocket" else "",
+            existingWifiPassphrase = if (mode == WirelessHotspotMode.EXISTING_WIFI || existingFallback) "pocket-password" else "",
             manualHotspotPassphrase = "12345678", identification = Iap2IdentificationConfig(
                 name = "test", modelIdentifier = "test", manufacturer = "test", serialNumber = "test",
                 firmwareVersion = "1", hardwareVersion = "1", carPlayUsbInterfaceNumber = 3)),
@@ -148,8 +165,24 @@ class CarHotspotFallbackTest {
 
     @Implements(ExistingWifiManager::class, isInAndroidSdk = false)
     class ExistingAttachment {
-        @Implementation fun start(timeoutMillis: Long): WirelessHotspotInfo =
-            WirelessHotspotInfo("Pocket", "pocket-password", Iap2WirelessSecurity.WPA_WPA2, 36,
+        @Implementation fun start(timeoutMillis: Long): WirelessHotspotInfo {
+            starts++
+            return WirelessHotspotInfo("Pocket", "pocket-password", Iap2WirelessSecurity.WPA_WPA2, 36,
                 5180, null, "wlan0", InetAddress.getByName("192.0.2.10"), "5 GHz", WirelessHotspotBackend.EXISTING_WIFI)
+        }
+
+        companion object { var starts = 0 }
+    }
+
+    @Implements(WifiP2pGroupManager::class, isInAndroidSdk = false)
+    class P2pFailure {
+        @Implementation fun start(timeoutMillis: Long): WirelessHotspotInfo {
+            starts++
+            throw IOException("Wi-Fi P2P is unavailable in this VM")
+        }
+
+        @Implementation fun close() = Unit
+
+        companion object { var starts = 0 }
     }
 }

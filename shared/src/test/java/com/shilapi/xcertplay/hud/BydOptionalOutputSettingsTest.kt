@@ -16,6 +16,20 @@ import org.robolectric.shadows.ShadowBuild
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [29], manifest = Config.NONE)
 class BydOptionalOutputSettingsTest {
+    @Test fun nonBydVmKeepsBydOutputsInertEvenIfTheSavedSwitchIsOn() {
+        val app = RuntimeEnvironment.getApplication()
+        ShadowBuild.setManufacturer("ZEEKR")
+        ShadowBuild.setBrand("ZEEKR")
+        ShadowBuild.setFingerprint("ZEEKR/isolated_vm/virtual:13/test")
+        BydOutputSettings.setEnabled(app, true)
+
+        assertFalse(BydOutputSettings.available(app))
+        assertFalse(BydOutputSettings.enabled(app))
+        assertFalse(BydOutputSettings.batteryToIphoneActive(app))
+        assertFalse(BydOutputSettings.wheelSpeedToIphoneActive(app))
+        assertFalse(BydOutputSettings.videoWhileParkedActive(app))
+    }
+
     @Test fun optionalOutputsDefaultOffAndKeepExplicitPreviousSelections() {
         val app = RuntimeEnvironment.getApplication()
         val prefs = app.getSharedPreferences("diplay_byd_outputs", Context.MODE_PRIVATE)
