@@ -20,8 +20,8 @@ diagnostic report.
 
 ## Runtime capability behavior
 
-- USB host, Bluetooth, Wi-Fi, Wi-Fi Direct, microphone, and audio output are optional manifest
-  features, so their absence does not make the APK ineligible for installation.
+- USB host, Bluetooth, Wi-Fi, Wi-Fi Direct, microphone, audio output, and location hardware are
+  optional manifest features, so their absence does not make the APK ineligible for installation.
 - DiPlay records both Android feature declarations and the services/adapters actually visible to
   this process. Vendor VMs sometimes expose one without the other, so feature declarations alone
   never approve a transport.
