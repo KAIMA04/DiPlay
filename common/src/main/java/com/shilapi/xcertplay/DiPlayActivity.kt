@@ -45,6 +45,7 @@ import com.shilapi.xcertplay.adb.LocalAdb
 import com.shilapi.xcertplay.airplay.CarPlayClusterDisplay
 import com.shilapi.xcertplay.airplay.CarPlayDisplayScale
 import com.shilapi.xcertplay.airplay.ClusterTurnCardOverlay
+import com.shilapi.xcertplay.compat.HeadUnitCapabilityDetector
 import com.shilapi.xcertplay.compat.closeCompat
 import com.shilapi.xcertplay.hud.BydAdbAccess
 import com.shilapi.xcertplay.hud.BydNavigationOutputs
@@ -4431,26 +4432,58 @@ class DiPlayActivity : ComponentActivity(), AppAppearanceOwner {
             bluetoothPermission.launch(Manifest.permission.BLUETOOTH_CONNECT); return
         }
         val adapter = getSystemService(BluetoothManager::class.java)?.adapter
-        if (adapter == null || !adapter.isEnabled) {
+        if (adapter == null) {
+            appDialogBuilder().setTitle(getString(R.string.wireless_connection_help))
+                .setMessage(getString(R.string.this_head_unit_may_not_support_wireless_carplay_try_a_usb))
+                .setPositiveButton(getString(R.string.connect_with_usb)) { _, _ -> connect(false) }
+                .setNeutralButton(getString(R.string.open_connection_setup)) { _, _ ->
+                    page = "connection"
+                    render()
+                }
+                .setNegativeButton(getString(R.string.later), null).show()
+            return
+        }
+        val bluetoothEnabled = runCatching { adapter.isEnabled }.getOrElse {
+            permissionHelp(
+                getString(R.string.nearby_devices),
+                getString(R.string.allow_nearby_devices_so_diplay_can_connect_to_your_paired),
+            )
+            return
+        }
+        if (!bluetoothEnabled) {
             appDialogBuilder().setTitle(getString(R.string.turn_on_bluetooth))
                 .setMessage(getString(R.string.enable_the_car_s_bluetooth_and_pair_your_iphone_first))
                 .setPositiveButton(getString(R.string.open_bluetooth)) { _, _ -> openSystem(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
+                .setNeutralButton(getString(R.string.connect_with_usb)) { _, _ -> connect(false) }
                 .setNegativeButton(getString(R.string.later), null).show(); return
         }
-        val devices = runCatching { adapter.bondedDevices.sortedBy { it.name ?: "" } }.getOrDefault(emptyList())
+        data class PhoneChoice(val name: String, val address: String)
+        val devices = runCatching {
+            adapter.bondedDevices.map { device ->
+                PhoneChoice(device.name ?: getString(R.string.paired_device), device.address)
+            }.sortedBy { it.name }
+        }.getOrElse {
+            permissionHelp(
+                getString(R.string.nearby_devices),
+                getString(R.string.allow_nearby_devices_so_diplay_can_connect_to_your_paired),
+            )
+            return
+        }
         if (devices.isEmpty()) {
             appDialogBuilder().setTitle(getString(R.string.pair_your_iphone))
                 .setMessage(getString(R.string.on_your_iphone_open_settings_bluetooth_and_pair_with_the_c))
                 .setPositiveButton(getString(R.string.open_bluetooth)) { _, _ -> openSystem(Intent(Settings.ACTION_BLUETOOTH_SETTINGS)) }
+                .setNeutralButton(getString(R.string.connect_with_usb)) { _, _ -> connect(false) }
                 .setNegativeButton(getString(R.string.got_it), null).show(); return
         }
         appDialogBuilder().setTitle(getString(R.string.choose_your_iphone))
-            .setItems(devices.map { device ->
-                val name = device.name ?: getString(R.string.paired_device)
-                if (devices.count { it.name == device.name } > 1) "$name · ${device.address.takeLast(5)}" else name
+            .setItems(devices.map { choice ->
+                if (devices.count { it.name == choice.name } > 1) {
+                    "${choice.name} · ${choice.address.takeLast(5)}"
+                } else choice.name
             }.toTypedArray()) { _, index ->
-                val device = devices[index]
-                DiPlayPreferences.savePhone(this, device.address, device.name ?: "iPhone")
+                val choice = devices[index]
+                DiPlayPreferences.savePhone(this, choice.address, choice.name)
                 val start = pendingWireless; pendingWireless = false
                 render()
                 if (start) connect(true)
@@ -4570,6 +4603,7 @@ class DiPlayActivity : ComponentActivity(), AppAppearanceOwner {
                     appendLine("DiPlay ${version()} · private beta diagnostic report")
                     appendLine("Android ${Build.VERSION.RELEASE} / API ${Build.VERSION.SDK_INT}")
                     appendLine("Head unit: ${Build.MANUFACTURER} ${Build.MODEL}")
+                    appendLine(HeadUnitCapabilityDetector.detect(appContext).diagnosticSummary())
                     appendLine("Connection: ${if (AirPlayPersistence.loadWirelessEnabled(appContext)) "wireless" else "USB"}")
                     appendLine("Authentication: local experimental beta identity; no remote fallback")
                     appendLine("CarPlay setup: ${if (setupError == null) "ready" else "authentication unavailable"}")

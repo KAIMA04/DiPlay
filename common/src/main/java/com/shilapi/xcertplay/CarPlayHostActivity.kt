@@ -132,6 +132,7 @@ class CarPlayHostActivity : ComponentActivity() {
     private val startupRetryBudget = WirelessStartupRetryBudget()
     private var startupRetryStopped = false
     private var startupRetryButton: View? = null
+    private var connectionOptionsButton: View? = null
     private var startupFailureGeneration = -1
     private lateinit var airPlayIdentity: AirPlayIdentity
     private var languagePreferenceAtCreate = AppLocale.SYSTEM
@@ -166,9 +167,12 @@ class CarPlayHostActivity : ComponentActivity() {
             hardwareVersion = "1.0",
             carPlayUsbInterfaceNumber = 3,
             locationInformationEnabled = locationReportingEnabled,
-            vehicleStatusEnabled = com.shilapi.xcertplay.hud.BydOutputSettings.batteryToIphoneActive(this),
+            vehicleStatusEnabled = com.shilapi.xcertplay.hud.BydOutputSettings.integrationAvailable(this) &&
+                com.shilapi.xcertplay.hud.BydOutputSettings.batteryToIphoneActive(this),
             chargingConnectors = com.shilapi.xcertplay.hud.BydOutputSettings.chargingConnectors(this),
-            vehicleSpeedEnabled = locationReportingEnabled && com.shilapi.xcertplay.hud.BydOutputSettings.wheelSpeedToIphoneActive(this),
+            vehicleSpeedEnabled = locationReportingEnabled &&
+                com.shilapi.xcertplay.hud.BydOutputSettings.integrationAvailable(this) &&
+                com.shilapi.xcertplay.hud.BydOutputSettings.wheelSpeedToIphoneActive(this),
         ),
         label = "DiPlay",
         hostName = "diplay-" + DiPlayBootstrap.deviceId(airPlayIdentity).replace(":", "").lowercase(),
@@ -1480,6 +1484,17 @@ class CarPlayHostActivity : ComponentActivity() {
             startupRetryButton = this
         }
         panel.addView(retry, LinearLayout.LayoutParams(dp(300), dp(64)).apply { bottomMargin = dp(12) })
+        val connectionOptions = Button(this).apply {
+            text = getString(R.string.open_connection_setup)
+            isAllCaps = false
+            visibility = View.GONE
+            setOnClickListener { showDiPlayHome("connection") }
+            connectionOptionsButton = this
+        }
+        panel.addView(
+            connectionOptions,
+            LinearLayout.LayoutParams(dp(300), dp(64)).apply { bottomMargin = dp(12) },
+        )
         val back = Button(this).apply {
             text = getString(R.string.back_to_diplay)
             isAllCaps = false
@@ -1520,7 +1535,7 @@ class CarPlayHostActivity : ComponentActivity() {
             fun spacing(short: Float, regular: Float) = dp(size(short, regular).toInt())
             val availableWidth = viewport.width - viewport.paddingLeft - viewport.paddingRight - dp(48)
             val buttonWidth = minOf(dp(300), availableWidth.coerceAtLeast(dp(48)))
-            for (button in listOf(back, recovery, retry)) {
+            for (button in listOf(back, recovery, retry, connectionOptions)) {
                 if (button.layoutParams.width != buttonWidth) {
                     button.layoutParams = button.layoutParams.apply { width = buttonWidth }
                 }
@@ -1535,7 +1550,7 @@ class CarPlayHostActivity : ComponentActivity() {
             stage.textSize = size(19f, 22f)
             instructions.textSize = size(15f, 17f)
             instructions.setPadding(0, spacing(8f, 14f), 0, spacing(12f, 24f))
-            for (button in listOf(back, recovery, retry)) {
+            for (button in listOf(back, recovery, retry, connectionOptions)) {
                 button.textSize = size(17f, 18f)
                 button.layoutParams = button.layoutParams.apply { this.height = spacing(50f, 64f) }
             }
@@ -1655,7 +1670,9 @@ class CarPlayHostActivity : ComponentActivity() {
 
     // The battery shows only where DiPlay already reads it for the iPhone.
     private fun refreshSidePanel() {
-        val battery = if (com.shilapi.xcertplay.hud.BydOutputSettings.batteryToIphoneActive(this)) {
+        val battery = if (com.shilapi.xcertplay.hud.BydOutputSettings.integrationAvailable(this) &&
+            com.shilapi.xcertplay.hud.BydOutputSettings.batteryToIphoneActive(this)
+        ) {
             com.shilapi.xcertplay.hud.BydNavigationOutputs.batteryStatus(applicationContext).snapshot()
         } else null
         sidePanelBattery?.text = battery?.let { "🔋 ${Math.round(it.batteryPercent)} %  ·  ${it.rangeKm} km" }.orEmpty()
@@ -3372,6 +3389,9 @@ class CarPlayHostActivity : ComponentActivity() {
         if (!wirelessEnabled) return
         hotspotStatus = when (status) {
             CarPlayStatus.StartingHotspot -> HotspotStatus(state = getString(R.string.starting))
+            is CarPlayStatus.HotspotFallback -> hotspotStatus.copy(
+                state = getString(R.string.wireless_backend_fallback, status.nextBackend),
+            )
             is CarPlayStatus.HotspotReady -> HotspotStatus(
                 state = getString(R.string.ready),
                 ssid = status.ssid,
@@ -3707,7 +3727,8 @@ class CarPlayHostActivity : ComponentActivity() {
             model = normalizedModel(),
             oemLabel = oemLabel,
             icons = listOf(loadAirPlayIcon()),
-            videoInCar = com.shilapi.xcertplay.hud.BydOutputSettings.videoWhileParkedActive(this),
+            videoInCar = com.shilapi.xcertplay.hud.BydOutputSettings.integrationAvailable(this) &&
+                com.shilapi.xcertplay.hud.BydOutputSettings.videoWhileParkedActive(this),
             mainBufferedAudio = AirPlayPersistence.loadMainBufferedAudio(this),
             disableAudioOutput = carBluetoothAudio,
         )
@@ -4053,6 +4074,9 @@ class CarPlayHostActivity : ComponentActivity() {
         updateHotspotStatus(status)
         val description = status.describe()
         setConnectionStage(description)
+        connectionOptionsButton?.visibility =
+            if (wirelessEnabled && (status is CarPlayStatus.Failed ||
+                    status is CarPlayStatus.HotspotFallback)) View.VISIBLE else View.GONE
         when (status) {
             is CarPlayStatus.Failed -> if (status.wifiResetRequired) {
                 wifiRecoveryButton?.visibility = View.VISIBLE
@@ -4217,7 +4241,7 @@ class CarPlayHostActivity : ComponentActivity() {
             savePairRecord = { record -> AirPlayPersistence.saveLockdownRecord(this, record) },
             clearPairRecord = { AirPlayPersistence.clearLockdownRecord(this) },
             locationProvider = locationProvider,
-            vehicleStatusProvider = if (com.shilapi.xcertplay.hud.BydOutputSettings.batteryToIphoneActive(this)) {
+            vehicleStatusProvider = if (config.identification.vehicleStatusEnabled) {
                 com.shilapi.xcertplay.hud.BydNavigationOutputs.batteryStatus(applicationContext)
             } else {
                 null
@@ -4542,12 +4566,15 @@ class CarPlayHostActivity : ComponentActivity() {
         if (menuOpen) recoveryPendingAfterMenu = true
         if (shuttingDown.get() || menuOpen || handshakeResetInProgress || startupRetryStopped) return
         if (reconnectScheduled) return
-        val startupDelay = if (startupFailure != null && startupFailure != WirelessStartupFailure.HOTSPOT_CONFIGURATION)
-            startupRetryBudget.nextDelayMillis() else null
+        val permanentStartupFailure = startupFailure == WirelessStartupFailure.HOTSPOT_CONFIGURATION ||
+            startupFailure == WirelessStartupFailure.PLATFORM_UNAVAILABLE
+        val startupDelay = if (startupFailure != null && !permanentStartupFailure) {
+            startupRetryBudget.nextDelayMillis()
+        } else null
         if (startupFailure != null && startupDelay == null) {
             startupRetryStopped = true
             startupRetryButton?.visibility = View.VISIBLE
-            setConnectionStage(if (startupFailure == WirelessStartupFailure.HOTSPOT_CONFIGURATION) reason
+            setConnectionStage(if (permanentStartupFailure) reason
                 else "$reason\n${getString(R.string.wireless_startup_retries_exhausted)}")
             appendLog("wireless startup recovery stopped generation=$restartGeneration reason=$startupFailure retries=${startupRetryBudget.retries}")
             return
@@ -4988,6 +5015,14 @@ class CarPlayHostActivity : ComponentActivity() {
     private fun friendlyStage(message: String): String = when {
         message == getString(R.string.waiting_for_mfi_coprocessor) ||
             message == getString(R.string.requesting_mfi_usb_permission) -> message
+        message.contains("Bluetooth is unavailable", true) ||
+            message.contains("Wi-Fi is unavailable", true) ->
+            getString(R.string.this_head_unit_may_not_support_wireless_carplay_try_a_usb)
+        message.contains("Bluetooth is turned off", true) ->
+            getString(R.string.enable_the_car_s_bluetooth_and_pair_your_iphone_first)
+        message.contains("Bluetooth permission", true) ||
+            message.contains("Bluetooth access was denied", true) ->
+            getString(R.string.allow_the_connection_permission_to_continue)
         message.contains("Turn on Wi-Fi", true) -> getString(R.string.turn_on_wi_fi_in_the_head_unit_s_settings_to_connect)
         message.contains("Allow precise Location", true) -> getString(R.string.allow_precise_location_for_diplay_in_the_head_unit_s_app_p)
         message.contains("Allow Nearby devices", true) -> getString(R.string.allow_nearby_devices_for_diplay_in_the_head_unit_s_app_per)
@@ -5081,10 +5116,11 @@ class CarPlayHostActivity : ComponentActivity() {
         CarPlayStatus.MfiReady -> getString(R.string.mfi_authentication_ready)
         CarPlayStatus.StartingHotspot -> getString(if (wirelessHotspotMode == WirelessHotspotMode.EXISTING_WIFI)
             R.string.existing_wifi_attaching else R.string.starting_wireless_hotspot)
+        is CarPlayStatus.HotspotFallback ->
+            getString(R.string.wireless_backend_fallback, nextBackend)
         is CarPlayStatus.HotspotReady ->
-            if (wirelessHotspotMode == WirelessHotspotMode.EXISTING_WIFI) {
-                getString(R.string.existing_wifi_ready, ssid, band, channel, address)
-            } else getString(R.string.status_hotspot_ready, backend, ssid, band, if (channel == 0) getString(R.string.auto_value) else channel.toString())
+            getString(R.string.status_hotspot_ready, backend, ssid, band,
+                if (channel == 0) getString(R.string.auto_value) else channel.toString())
         CarPlayStatus.WaitingForPairedIphone -> getString(R.string.waiting_for_paired_iphone)
         CarPlayStatus.ConnectingBluetooth -> getString(R.string.connecting_bluetooth)
         CarPlayStatus.RunningWireless -> getString(R.string.wireless_carplay_control_running)

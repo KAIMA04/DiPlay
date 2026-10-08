@@ -25,6 +25,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 class WirelessStartupRecoveryTest {
     private lateinit var activity: CarPlayHostActivity
     private lateinit var retry: Button
+    private lateinit var connectionOptions: Button
     private val failure = CarPlayStatus.Failed("timeout", startupFailure = WirelessStartupFailure.FIRST_TCP_TIMEOUT)
 
     @Before fun setup() {
@@ -34,6 +35,9 @@ class WirelessStartupRecoveryTest {
         ReflectionHelpers.setField(CarPlayBackgroundSession, "owner", activity)
         retry = Button(activity).apply { visibility = View.GONE }
         ReflectionHelpers.setField(activity, "startupRetryButton", retry)
+        connectionOptions = Button(activity).apply { visibility = View.GONE }
+        ReflectionHelpers.setField(activity, "connectionOptionsButton", connectionOptions)
+        ReflectionHelpers.setField(activity, "wirelessEnabled", true)
     }
 
     @After fun cleanup() {
@@ -65,6 +69,7 @@ class WirelessStartupRecoveryTest {
         assertTrue(ReflectionHelpers.getField(activity, "startupRetryStopped"))
         assertFalse(ReflectionHelpers.getField(activity, "reconnectScheduled"))
         assertEquals(View.VISIBLE, retry.visibility)
+        assertEquals(View.VISIBLE, connectionOptions.visibility)
         report(5, CarPlayStatus.Failed("Bluetooth socket closed"))
         assertFalse(ReflectionHelpers.getField(activity, "reconnectScheduled"))
     }
@@ -74,6 +79,18 @@ class WirelessStartupRecoveryTest {
         assertEquals(0, budget().retries)
         assertFalse(ReflectionHelpers.getField(activity, "reconnectScheduled"))
         assertEquals(View.VISIBLE, retry.visibility)
+        assertEquals(View.VISIBLE, connectionOptions.visibility)
+    }
+
+    @Test fun missingVmHardwareDoesNotLoopAutomaticRetries() {
+        report(status = CarPlayStatus.Failed(
+            "Bluetooth is unavailable",
+            startupFailure = WirelessStartupFailure.PLATFORM_UNAVAILABLE,
+        ))
+        assertEquals(0, budget().retries)
+        assertFalse(ReflectionHelpers.getField(activity, "reconnectScheduled"))
+        assertEquals(View.VISIBLE, retry.visibility)
+        assertEquals(View.VISIBLE, connectionOptions.visibility)
     }
 
     @Test fun staleGenerationUserDisconnectMenuAndDifferentOwnerCannotSchedule() {

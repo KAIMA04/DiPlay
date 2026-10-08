@@ -10,6 +10,7 @@ object BydNavigationOutputs {
         BydOemClusterNavi.restoreIfNeeded(context)
         BydDiLink3ClusterOutput.restoreIfNeeded(context)
         com.shilapi.xcertplay.network.WifiScanPause.restoreIfNeeded(context)
+        if (!BydOutputSettings.integrationAvailable(context)) return
         if (BydStandaloneHudOutput.available(context)) start(context)
         // Read the battery early, so a reading is ready when CarPlay identifies (see batteryStatus).
         if (BydOutputSettings.batteryToIphoneActive(context)) BydBatteryStatus.start(context)

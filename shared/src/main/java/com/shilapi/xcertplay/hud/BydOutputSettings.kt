@@ -163,6 +163,13 @@ object BydOutputSettings {
             android.os.Build.PRODUCT.contains("BYD", ignoreCase = true) ||
             android.os.Build.DEVICE.contains("BYD", ignoreCase = true)
 
+    /**
+     * Runtime integration may also trust a completed vehicle-service probe. This preserves older
+     * BYD units whose build identity is the generic QUALCOMM/qti reported by their firmware.
+     */
+    fun integrationAvailable(context: Context): Boolean =
+        available(context) || BydVehicleFieldStore.load(context) != null
+
     private fun installed(context: Context, pkg: String): Boolean =
         runCatching { context.packageManager.getPackageInfo(pkg, 0) }.isSuccess
 
