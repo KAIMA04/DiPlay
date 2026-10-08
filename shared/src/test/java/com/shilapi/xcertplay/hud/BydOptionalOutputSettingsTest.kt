@@ -25,8 +25,9 @@ class BydOptionalOutputSettingsTest {
         ShadowBuild.setFingerprint("ZEEKR/isolated_vm/virtual:13/test")
         BydOutputSettings.setEnabled(app, true)
 
-        assertFalse(BydOutputSettings.available(app))
-        assertFalse(BydOutputSettings.enabled(app))
+        assertFalse(BydOutputSettings.integrationAvailable(app))
+        // Preserve the saved BYD preference; production call sites gate the integration.
+        assertTrue(BydOutputSettings.enabled(app))
         assertFalse(BydOutputSettings.batteryToIphoneActive(app))
         assertFalse(BydOutputSettings.wheelSpeedToIphoneActive(app))
         assertFalse(BydOutputSettings.videoWhileParkedActive(app))

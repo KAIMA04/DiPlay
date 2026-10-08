@@ -26,9 +26,7 @@ object BydOutputSettings {
     const val DEFAULT_LOW_CHARGE_PERCENT = 20
     val lowChargePresets = listOf(10, 15, 20, 25, 30)
 
-    /** BYD output is opt-out on detected BYD hardware and inert everywhere else. */
-    fun enabled(context: Context): Boolean =
-        available(context) && prefs(context).getBoolean(KEY_ENABLED, true)
+    fun enabled(context: Context): Boolean = prefs(context).getBoolean(KEY_ENABLED, true)
 
     fun setEnabled(context: Context, enabled: Boolean) = prefs(context).edit().putBoolean(KEY_ENABLED, enabled).apply()
 
@@ -47,8 +45,7 @@ object BydOutputSettings {
 
     /** Default mode uses the DiLink 5.0 addresses; legacy mode exposes only fields its saved probe confirmed. */
     fun batteryToIphoneActive(context: Context): Boolean =
-        available(context) && batteryToIphone(context) &&
-            supportedInSelectedMode(context) { it.batterySupported }
+        batteryToIphone(context) && supportedInSelectedMode(context) { it.batterySupported }
 
     /** The charging inlets the iPhone is told about; applies on the next connection. */
     fun chargingConnectors(context: Context): EvChargingConnectors =
@@ -68,8 +65,7 @@ object BydOutputSettings {
     }
 
     fun wheelSpeedToIphoneActive(context: Context): Boolean =
-        available(context) && wheelSpeedToIphone(context) &&
-            supportedInSelectedMode(context) { it.motionSupported }
+        wheelSpeedToIphone(context) && supportedInSelectedMode(context) { it.motionSupported }
     /** Offer iOS 27 video in car, played only while the gear reads P (needs ADB over network). */
     fun videoWhileParked(context: Context): Boolean = prefs(context).getBoolean(KEY_VIDEO_WHILE_PARKED, false)
 
@@ -103,8 +99,7 @@ object BydOutputSettings {
         prefs(context).edit().putBoolean(KEY_CLUSTER_SONG_ON_CHANGE, enabled).apply()
 
     fun videoWhileParkedActive(context: Context): Boolean =
-        available(context) && videoWhileParked(context) &&
-            supportedInSelectedMode(context) { it.gearSupported }
+        videoWhileParked(context) && supportedInSelectedMode(context) { it.gearSupported }
 
     /**
      * Use addresses saved by the legacy head-unit probe. Existing installations with a saved probe
@@ -158,9 +153,6 @@ object BydOutputSettings {
     /** Whether the head unit has a BYD navigation receiver or is a BYD head unit, so settings can show navigation/map options. */
     fun available(context: Context): Boolean =
         navigationAvailable(context) ||
-            // A completed, persisted vehicle-service probe is stronger evidence than the generic
-            // QUALCOMM/qti build strings reported by some older BYD head units.
-            BydVehicleFieldStore.load(context) != null ||
             installed(context, "com.byd.carsettings") ||
             installed(context, "com.byd.appmgr") ||
             installed(context, "com.byd.deviceinfo") ||
@@ -170,6 +162,13 @@ object BydOutputSettings {
             android.os.Build.MANUFACTURER.contains("BYD", ignoreCase = true) ||
             android.os.Build.PRODUCT.contains("BYD", ignoreCase = true) ||
             android.os.Build.DEVICE.contains("BYD", ignoreCase = true)
+
+    /**
+     * Runtime integration may also trust a completed vehicle-service probe. This preserves older
+     * BYD units whose build identity is the generic QUALCOMM/qti reported by their firmware.
+     */
+    fun integrationAvailable(context: Context): Boolean =
+        available(context) || BydVehicleFieldStore.load(context) != null
 
     private fun installed(context: Context, pkg: String): Boolean =
         runCatching { context.packageManager.getPackageInfo(pkg, 0) }.isSuccess

@@ -56,7 +56,7 @@ object HeadUnitCapabilityDetector {
         }.getOrDefault(emptyList())
         return HeadUnitCapabilities(
             sdkInt = Build.VERSION.SDK_INT,
-            bydHardware = BydOutputSettings.available(app),
+            bydHardware = BydOutputSettings.integrationAvailable(app),
             usbHostFeature = packages.hasSystemFeature(PackageManager.FEATURE_USB_HOST),
             usbService = runCatching { app.getSystemService(UsbManager::class.java) != null }.getOrDefault(false),
             bluetoothFeature = packages.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH),
