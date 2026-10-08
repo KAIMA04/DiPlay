@@ -2289,53 +2289,55 @@ class CarPlayController(
         (wifiScanPause ?: WifiScanPause(appContext, ::debugLog).also { wifiScanPause = it }).pause()
     }
 
-    private fun selectWirelessBluetoothDevice(adapter: BluetoothAdapter): BluetoothDevice = try {
-        val bonded = adapter.bondedDevices.orEmpty()
-        config.wirelessBluetoothDeviceAddress?.let { selected ->
-            return bonded.firstOrNull { it.address.equals(selected, ignoreCase = true) }
-                ?: throw IOException("The selected iPhone is no longer paired. Choose it again in DiPlay.")
-        }
-        val iPhones = bonded.filter { device ->
-            device.name?.contains("iPhone", ignoreCase = true) == true
-        }
-        val directlyConnectedIPhones = iPhones.filter(::isBluetoothDeviceConnected)
-        Log.i(
-            IphoneCarPlayConfiguration.TAG,
-            "wireless Bluetooth bondedIPhones=${iPhones.size} " +
-                "directlyConnected=${directlyConnectedIPhones.size}",
-        )
-        val connectedIPhones = if (directlyConnectedIPhones.isNotEmpty()) {
-            directlyConnectedIPhones
-        } else {
-            val connectedAddresses = connectedBluetoothDevices(adapter).mapTo(mutableSetOf()) {
-                it.address
+    private fun selectWirelessBluetoothDevice(adapter: BluetoothAdapter): BluetoothDevice {
+        try {
+            val bonded = adapter.bondedDevices.orEmpty()
+            config.wirelessBluetoothDeviceAddress?.let { selected ->
+                return bonded.firstOrNull { it.address.equals(selected, ignoreCase = true) }
+                    ?: throw IOException("The selected iPhone is no longer paired. Choose it again in DiPlay.")
             }
-            iPhones.filter { it.address in connectedAddresses }
-        }
-        if (connectedIPhones.size == 1) return connectedIPhones.single()
-        if (connectedIPhones.size > 1) {
+            val iPhones = bonded.filter { device ->
+                device.name?.contains("iPhone", ignoreCase = true) == true
+            }
+            val directlyConnectedIPhones = iPhones.filter(::isBluetoothDeviceConnected)
+            Log.i(
+                IphoneCarPlayConfiguration.TAG,
+                "wireless Bluetooth bondedIPhones=${iPhones.size} " +
+                    "directlyConnected=${directlyConnectedIPhones.size}",
+            )
+            val connectedIPhones = if (directlyConnectedIPhones.isNotEmpty()) {
+                directlyConnectedIPhones
+            } else {
+                val connectedAddresses = connectedBluetoothDevices(adapter).mapTo(mutableSetOf()) {
+                    it.address
+                }
+                iPhones.filter { it.address in connectedAddresses }
+            }
+            if (connectedIPhones.size == 1) return connectedIPhones.single()
+            if (connectedIPhones.size > 1) {
+                throw IOException(
+                    "Multiple connected iPhones found: " +
+                        connectedIPhones.joinToString { "${it.name ?: "iPhone"} (${it.address})" },
+                )
+            }
+            if (iPhones.size == 1) return iPhones.single()
+            if (iPhones.size > 1) {
+                throw IOException(
+                    "Multiple bonded iPhones found and none is currently connected; " +
+                        "connect one iPhone and retry",
+                )
+            }
+            if (bonded.size == 1) return bonded.single()
             throw IOException(
-                "Multiple connected iPhones found: " +
-                    connectedIPhones.joinToString { "${it.name ?: "iPhone"} (${it.address})" },
+                "No unambiguous bonded iPhone found; pair one iPhone and retry",
+            )
+        } catch (error: SecurityException) {
+            throw WirelessStartupException(
+                WirelessStartupFailure.PLATFORM_UNAVAILABLE,
+                "Bluetooth access was denied by this Android environment. Allow Nearby devices, or use USB.",
+                error,
             )
         }
-        if (iPhones.size == 1) return iPhones.single()
-        if (iPhones.size > 1) {
-            throw IOException(
-                "Multiple bonded iPhones found and none is currently connected; " +
-                    "connect one iPhone and retry",
-            )
-        }
-        if (bonded.size == 1) return bonded.single()
-        throw IOException(
-            "No unambiguous bonded iPhone found; pair one iPhone and retry",
-        )
-    } catch (error: SecurityException) {
-        throw WirelessStartupException(
-            WirelessStartupFailure.PLATFORM_UNAVAILABLE,
-            "Bluetooth access was denied by this Android environment. Allow Nearby devices, or use USB.",
-            error,
-        )
     }
 
     private fun connectBluetoothSocket(socket: BluetoothSocket, address: String) {

@@ -57,14 +57,14 @@ object HeadUnitCapabilityDetector {
         return HeadUnitCapabilities(
             sdkInt = Build.VERSION.SDK_INT,
             bydHardware = BydOutputSettings.available(app),
-            usbHostFeature = packages.hasFeature(PackageManager.FEATURE_USB_HOST),
+            usbHostFeature = packages.hasSystemFeature(PackageManager.FEATURE_USB_HOST),
             usbService = runCatching { app.getSystemService(UsbManager::class.java) != null }.getOrDefault(false),
-            bluetoothFeature = packages.hasFeature(PackageManager.FEATURE_BLUETOOTH),
+            bluetoothFeature = packages.hasSystemFeature(PackageManager.FEATURE_BLUETOOTH),
             bluetoothService = bluetooth != null,
             bluetoothAdapter = runCatching { bluetooth?.adapter != null }.getOrDefault(false),
-            wifiFeature = packages.hasFeature(PackageManager.FEATURE_WIFI),
+            wifiFeature = packages.hasSystemFeature(PackageManager.FEATURE_WIFI),
             wifiService = runCatching { app.getSystemService(WifiManager::class.java) != null }.getOrDefault(false),
-            wifiDirectFeature = packages.hasFeature(PackageManager.FEATURE_WIFI_DIRECT),
+            wifiDirectFeature = packages.hasSystemFeature(PackageManager.FEATURE_WIFI_DIRECT),
             wifiDirectService = runCatching {
                 app.getSystemService(WifiP2pManager::class.java) != null
             }.getOrDefault(false),
