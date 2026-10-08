@@ -2174,12 +2174,15 @@ class CarPlayController(
             }
         }
         val attempted = failures.joinToString { (mode, _) -> mode.diagnosticLabel() }
+        val details = failures.joinToString("; ") { (mode, failure) ->
+            "${mode.diagnosticLabel()}: ${wirelessFailureSummary(failure)}"
+        }
         val last = failures.lastOrNull()?.second
         throw WirelessStartupException(
             WirelessStartupFailure.HOTSPOT_CONFIGURATION,
             "Could not open a wireless network${attempted.takeIf { it.isNotEmpty() }?.let { " (tried $it)" }.orEmpty()}. " +
                 "Open Connection setup to choose another saved network, or use USB. " +
-                (last?.let(::wirelessFailureSummary) ?: "No compatible wireless backend is available."),
+                (details.takeIf { it.isNotEmpty() } ?: "No compatible wireless backend is available."),
             last,
         )
     }

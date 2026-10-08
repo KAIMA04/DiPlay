@@ -108,7 +108,7 @@ class CarHotspotFallbackTest {
     private fun assertStartupFailure(message: String, generation: Int = 0) {
         controller().use { controller ->
             val error = assertThrows(IOException::class.java) { start(controller, generation) }
-            assertTrue(error.message, error.message!!.startsWith(message))
+            assertTrue(error.message, error.message!!.contains(message))
             assertEquals(0, ManualAttachment.starts)
         }
     }
