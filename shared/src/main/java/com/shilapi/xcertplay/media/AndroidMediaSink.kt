@@ -1286,6 +1286,10 @@ private class AudioRenderer(
     voiceFilter: Boolean = false,
 ) : Closeable {
     private data class AudioPacket(val rtp: ByteArray, val sample: Int)
+    private data class TrackRoute(
+        val track: AudioTrack,
+        val attributes: AudioAttributes,
+    )
 
     private val pcmChannels = if (format.channels >= 2) 2 else 1
     private val voiceFilter = if (voiceFilter && format.sampleRate > 0) VoiceFilter(format.sampleRate, pcmChannels) else null
@@ -1468,47 +1472,73 @@ private class AudioRenderer(
         val selection = mappedSelection()
         mappedChannel = selection.channel
         val streamOverride = channelOverride(selection.channel)
-        var attributes = audioAttributesFor(selection, streamOverride)
-        trackAttributes = attributes
         val plan = MediaAudioBuffer.plan(selection.channel == AudioChannel.MEDIA,
             format.sampleRate, format.channels, minBuffer, mediaBufferMillis)
         bytesPerSecond = format.sampleRate * frameBytes
-        val built: AudioTrack
-        var routeLabel: String
         diagnosticStage = "track-build"
-        if (streamOverride == 0) {
-            attributes = audioAttributesFor(selection)
-            routeLabel = "usage"
-            built = AudioTrack.Builder()
-                .setAudioAttributes(attributes)
-                .setAudioFormat(pcmFormat(encoding, channelMask))
-                .setTransferMode(AudioTrack.MODE_STREAM)
-                .setBufferSizeInBytes(plan.trackBufferBytes)
-                .build()
-        } else {
-            val streamType = streamOverride
-            routeLabel = "streamType=$streamType"
-            built = LegacyAudioFallback.build(
-                createLegacy = {
-                    AudioTrack(streamType, format.sampleRate, channelMask, encoding,
-                        plan.trackBufferBytes, AudioTrack.MODE_STREAM)
-                },
-                isInitialized = { it.state == AudioTrack.STATE_INITIALIZED },
-                release = { it.release() },
-                createFallback = {
-                    diagnosticStage = "track-fallback-build"
-                    routeLabel = "streamType=$streamType(fallback=usage)"
-                    Log.w(TAG, "streamType=$streamType rejected by this ROM; falling back to usage-based track")
-                    attributes = audioAttributesFor(selection)
+        val standardStream = standardLegacyStream(selection.channel)
+        val attempts = buildList {
+            if (streamOverride != 0) {
+                add(AudioOutputAttempt("configured-streamType=$streamOverride") {
+                    val attributes = audioAttributesFor(selection, streamOverride)
+                    TrackRoute(
+                        @Suppress("DEPRECATION")
+                        AudioTrack(
+                            streamOverride,
+                            format.sampleRate,
+                            channelMask,
+                            encoding,
+                            plan.trackBufferBytes,
+                            AudioTrack.MODE_STREAM,
+                        ),
+                        attributes,
+                    )
+                })
+            }
+            add(AudioOutputAttempt("usage=${usageFor(selection.channel)}") {
+                val attributes = audioAttributesFor(selection)
+                TrackRoute(
                     AudioTrack.Builder()
                         .setAudioAttributes(attributes)
                         .setAudioFormat(pcmFormat(encoding, channelMask))
                         .setTransferMode(AudioTrack.MODE_STREAM)
                         .setBufferSizeInBytes(plan.trackBufferBytes)
-                        .build()
-                },
-            )
+                        .build(),
+                    attributes,
+                )
+            })
+            if (streamOverride != standardStream) {
+                add(AudioOutputAttempt("standard-streamType=$standardStream") {
+                    val attributes = audioAttributesFor(selection, standardStream)
+                    TrackRoute(
+                        @Suppress("DEPRECATION")
+                        AudioTrack(
+                            standardStream,
+                            format.sampleRate,
+                            channelMask,
+                            encoding,
+                            plan.trackBufferBytes,
+                            AudioTrack.MODE_STREAM,
+                        ),
+                        attributes,
+                    )
+                })
+            }
         }
+        val selectedRoute = AudioOutputFallback.select(
+            attempts = attempts,
+            isReady = { it.track.state == AudioTrack.STATE_INITIALIZED },
+            release = { it.track.release() },
+            onRejected = { label, reason ->
+                diagnosticStage = "track-fallback-build"
+                val line = "Audio: route rejected audioType=${format.audioType} route=$label reason=$reason"
+                Log.w(TAG, line)
+                runCatching { report(line) }
+            },
+        )
+        val built = selectedRoute.output.track
+        val attributes = selectedRoute.output.attributes
+        val routeLabel = selectedRoute.label
         track = built
         diagnosticStage = "track-attributes"
         trackAttributes = audioTrackAttributesForFocus(built, attributes)
@@ -1522,7 +1552,7 @@ private class AudioRenderer(
         }.getOrDefault("api=${Build.VERSION.SDK_INT} trackMetadata=unavailable")
         report("Audio: ready audioType=${format.audioType} codec=${format.codec} " +
             "rate=${format.sampleRate} channels=${format.channels} " +
-            "route=$routeLabel " +
+            "route=$routeLabel rejected=${selectedRoute.rejected.joinToString(",").ifEmpty { "none" }} " +
             "bufferMs=${capacityBytes * 1000L / bytesPerSecond} startMs=${startThresholdBytes * 1000L / bytesPerSecond} " +
             trackMetadata)
         Log.i(
@@ -1530,7 +1560,7 @@ private class AudioRenderer(
             "audio track prepared type=${format.payloadType} audioType=${format.audioType} " +
                 "codec=${format.codec} " +
                 "rate=${format.sampleRate} channels=${format.channels} " +
-                "route=$routeLabel " +
+                "route=$routeLabel rejected=${selectedRoute.rejected.joinToString(",").ifEmpty { "none" }} " +
                 "buffer=${capacityBytes * 1000L / bytesPerSecond}ms start=${startThresholdBytes * 1000L / bytesPerSecond}",
         )
         Log.i(
@@ -1549,6 +1579,13 @@ private class AudioRenderer(
         AudioChannel.MEDIA -> mediaChannel
         AudioChannel.NAVIGATION -> navigationChannel
         else -> 0
+    }
+
+    /** Generic Android fallback when a usage route is rejected by a vendor audio policy. */
+    private fun standardLegacyStream(channel: AudioChannel): Int = when (channel) {
+        AudioChannel.PHONE -> AudioManager.STREAM_VOICE_CALL
+        AudioChannel.MEDIA, AudioChannel.ASSISTANT, AudioChannel.NAVIGATION ->
+            AudioManager.STREAM_MUSIC
     }
 
     private fun audioAttributesFor(
